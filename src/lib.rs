@@ -1,6 +1,11 @@
+#[cfg(not(target_arch = "wasm32"))]
 use minifb::{Key, Window};
 use rand::Rng;
+#[cfg(not(target_arch = "wasm32"))]
 use rodio::Sink;
+
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
 
 const FONT_SET: [u8; 80] = [
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0  like ASCII those bits are high
@@ -78,74 +83,10 @@ impl Chip8 {
     pub fn load_rom(&mut self, data: &[u8]) {
         let start_addr: usize = 0x200;
         self.pc = start_addr as u16;
-        if data.len() > (self.ram.len() - start_addr) {
-            panic!("ROM is too large for RAM!");
-        }
-        let end_addr = start_addr + data.len();
-        self.ram[start_addr..end_addr].copy_from_slice(&data);
-    }
-
-    pub fn update_keypad(&mut self, window: &Window) {
-        // update our keypad buffer position based on key press
-        self.keypad[0x1] = window.is_key_down(Key::W); //player 1 up
-        self.keypad[0x2] = window.is_key_down(Key::Key2);
-        self.keypad[0x3] = window.is_key_down(Key::Key3);
-        self.keypad[0xC] = window.is_key_down(Key::K); // player 2 up
-
-        self.keypad[0x4] = window.is_key_down(Key::Q); //player 1 down
-        self.keypad[0x5] = window.is_key_down(Key::W);
-        self.keypad[0x6] = window.is_key_down(Key::E);
-        self.keypad[0xD] = window.is_key_down(Key::J); //player 2 down
-
-        self.keypad[0x7] = window.is_key_down(Key::A);
-        self.keypad[0x8] = window.is_key_down(Key::S);
-        self.keypad[0x9] = window.is_key_down(Key::D);
-        self.keypad[0xE] = window.is_key_down(Key::F);
-
-        self.keypad[0xA] = window.is_key_down(Key::Z);
-        self.keypad[0x0] = window.is_key_down(Key::X);
-        self.keypad[0xB] = window.is_key_down(Key::C);
-        self.keypad[0xF] = window.is_key_down(Key::V);
-    }
-
-    pub fn run(&mut self, window: &mut Window, sound: &mut Sink) {
-        assert!(self.pc >= 0x200);
-
-        // Limit the window to 60 FPS for the timers
-        window.set_target_fps(60);
-
-        while window.is_open() && !window.is_key_down(Key::Escape) {
-            // 1. Update Keypad state
-            self.update_keypad(&window);
-
-            // 2. Run multiple CPU cycles per frame
-            // (At 60 FPS, 10 cycles per frame = 600Hz)
-            for _ in 0..10 {
-                let opcode = self.fetch();
-                self.decode_execute(opcode);
-            }
-
-            // 3. Update Timers (Once per frame)
-            self.tick_timers();
-            if self.sound_timer > 0 {
-                sound.play();
-            } else {
-                sound.pause();
-            }
-
-            // 4. Update Window Buffer
-            // minifb expects a Vec<u32> where each u32 is 0x00RRGGBB
-            if self.draw_flag {
-                let buffer: Vec<u32> = self
-                    .display
-                    .iter()
-                    .map(|&p| if p == 1 { 0xFFFFFF } else { 0x000000 })
-                    .collect();
-                window.update_with_buffer(&buffer, 64, 32).expect("Failed to update display");
-                self.draw_flag = false;
-            }
-            window.update();
-        }
+        let max_len = self.ram.len() - start_addr;
+        let copy_len = data.len().min(max_len);
+        let end_addr = start_addr + copy_len;
+        self.ram[start_addr..end_addr].copy_from_slice(&data[..copy_len]);
     }
 
     pub fn fetch(&mut self) -> u16 {
@@ -490,6 +431,72 @@ impl Chip8 {
         // LD Vx, [I]: Read registers V0 through Vx from memory starting at location I
         for i in 0..=x {
             self.vx[i] = self.ram[self.i as usize + i];
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Chip8 {
+    pub fn update_keypad(&mut self, window: &Window) {
+        // update our keypad buffer position based on key press
+        self.keypad[0x1] = window.is_key_down(Key::W); //player 1 up
+        self.keypad[0x2] = window.is_key_down(Key::Key2);
+        self.keypad[0x3] = window.is_key_down(Key::Key3);
+        self.keypad[0xC] = window.is_key_down(Key::K); // player 2 up
+
+        self.keypad[0x4] = window.is_key_down(Key::Q); //player 1 down
+        self.keypad[0x5] = window.is_key_down(Key::W);
+        self.keypad[0x6] = window.is_key_down(Key::E);
+        self.keypad[0xD] = window.is_key_down(Key::J); //player 2 down
+
+        self.keypad[0x7] = window.is_key_down(Key::A);
+        self.keypad[0x8] = window.is_key_down(Key::S);
+        self.keypad[0x9] = window.is_key_down(Key::D);
+        self.keypad[0xE] = window.is_key_down(Key::F);
+
+        self.keypad[0xA] = window.is_key_down(Key::Z);
+        self.keypad[0x0] = window.is_key_down(Key::X);
+        self.keypad[0xB] = window.is_key_down(Key::C);
+        self.keypad[0xF] = window.is_key_down(Key::V);
+    }
+
+    pub fn run(&mut self, window: &mut Window, sound: &mut Sink) {
+        assert!(self.pc >= 0x200);
+
+        // Limit the window to 60 FPS for the timers
+        window.set_target_fps(60);
+
+        while window.is_open() && !window.is_key_down(Key::Escape) {
+            // 1. Update Keypad state
+            self.update_keypad(&window);
+
+            // 2. Run multiple CPU cycles per frame
+            // (At 60 FPS, 10 cycles per frame = 600Hz)
+            for _ in 0..10 {
+                let opcode = self.fetch();
+                self.decode_execute(opcode);
+            }
+
+            // 3. Update Timers (Once per frame)
+            self.tick_timers();
+            if self.sound_timer > 0 {
+                sound.play();
+            } else {
+                sound.pause();
+            }
+
+            // 4. Update Window Buffer
+            // minifb expects a Vec<u32> where each u32 is 0x00RRGGBB
+            if self.draw_flag {
+                let buffer: Vec<u32> = self
+                    .display
+                    .iter()
+                    .map(|&p| if p == 1 { 0xFFFFFF } else { 0x000000 })
+                    .collect();
+                window.update_with_buffer(&buffer, 64, 32).expect("Failed to update display");
+                self.draw_flag = false;
+            }
+            window.update();
         }
     }
 }
